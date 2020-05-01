@@ -9,14 +9,11 @@ FROM ubuntu:18.04 as builder
 
 MAINTAINER Modupeore Adetunji "madetunj@stjude.org"
 
-### Base Image
-
-USER root
-
 #install java
 RUN apt-get update
-RUN apt-get --yes install build-essential openjdk-11-jdk-headless unzip wget zlib1g-dev
+RUN apt-get --yes install build-essential python3 wget unzip zlib1g-dev
 RUN rm -rf /var/lib/apt/lists/*
+RUN cp /usr/bin/python3 /usr/bin/python
 
 #install samtools
 ENV SAMTOOLS_VERSION 1.9
@@ -26,12 +23,90 @@ RUN cd /tmp && wget $SAMTOOLS_URL; \
     cd samtools-${SAMTOOLS_VERSION}; \
     ./configure \
     --prefix /usr/local --disable-bz2 --disable-lzma --without-curses \
-    && make -j $(nproc) && make install && \
-    rm -rf samtools-${SAMTOOLS_VERSION}*
+    && make -j $(nproc) && make install
+
+#install bedtools
+ENV BEDTOOLS_VERSION 2.25.0
+ENV BEDTOOLS_URL "https://github.com/arq5x/bedtools2/releases/download/v${BEDTOOLS_VERSION}/bedtools-${BEDTOOLS_VERSION}.tar.gz"
+RUN cd /tmp && wget $BEDTOOLS_URL; \
+    tar -zxf bedtools-${BEDTOOLS_VERSION}.tar.gz; \
+    cd bedtools2; \
+    make && make install
+
+#install fastqc
+ENV FASTQC_VERSION 0.11.9
+ENV FASTQC_URL "https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v${FASTQC_VERSION}.zip"
+RUN cd /tmp && wget ${FASTQC_URL}; \
+    unzip fastqc_v${FASTQC_VERSION}.zip; \
+    chmod 755 FastQC/fastqc;
+
+#install seaseq
+ENV SEASEQ_VERSION 2-dev
+ENV SEASEQ_URL "https://github.com/madetunj/seaseq-dev/archive/v${SEASEQ_VERSION}.tar.gz"
+RUN mkdir -p /tmp/SEASEQ
+RUN cd /tmp && wget ${SEASEQ_URL} && tar -xf v${SEASEQ_VERSION}.tar.gz; \
+    cp -rf /tmp/seaseq-dev-${SEASEQ_VERSION}/bin /tmp/SEASEQ/bin; \
+    cp -rf /tmp/seaseq-dev-${SEASEQ_VERSION}/cwl /tmp/SEASEQ/cwl;
+
+FROM ubuntu:18.04 
+
+ENV DEBIAN_FRONTEND noninteractive
+RUN apt-get update \ 
+	&& apt-get install -y --no-install-recommends \
+	    apt-utils \
+		ed \
+		less \
+		locales \
+		vim-tiny \
+		wget \
+		ca-certificates \
+		apt-transport-https \
+		gsfonts \
+		gnupg2 \
+		curl \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Configure default locale, see https://github.com/rocker-org/rocker/issues/19
+RUN echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen \
+	&& locale-gen en_US.utf8 \
+	&& /usr/sbin/update-locale LANG=en_US.UTF-8
+
+ENV LC_ALL en_US.UTF-8
+ENV LANG en_US.UTF-8
+
+RUN echo "deb https://cloud.r-project.org/bin/linux/ubuntu bionic-cran35/" > /etc/apt/sources.list.d/cran.list
+
+# note the proxy for gpg
+RUN curl -sSL 'http://keyserver.ubuntu.com/pks/lookup?op=get&search=0xE084DAB9' | gpg --import
+RUN gpg -a --export E084DAB9 | apt-key add -
+RUN curl -sSL 'http://keyserver.ubuntu.com/pks/lookup?op=get&search=0x51716619E084DAB9' | gpg --import
+RUN gpg -a --export 51716619E084DAB9 | apt-key add -
+   
+ENV R_BASE_VERSION 3.6.3
+LABEL version=3.6.3
+
+# Now install R and littler, and create a link for littler in /usr/local/bin
+# Also set a default CRAN repo, and make sure littler knows about it too
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		littler \
+        r-cran-littler \
+		r-base=${R_BASE_VERSION}* \
+		r-base-dev=${R_BASE_VERSION}* \
+		r-recommended=${R_BASE_VERSION}* \
+        && echo 'options(repos = c(CRAN = "https://cloud.r-project.org/"), download.file.method = "libcurl")' >> /etc/R/Rprofile.site \
+        && echo 'source("/etc/R/Rprofile.site")' >> /etc/littler.r \
+	&& ln -s /usr/share/doc/littler/examples/install.r /usr/local/bin/install.r \
+	&& ln -s /usr/share/doc/littler/examples/install2.r /usr/local/bin/install2.r \
+	&& ln -s /usr/share/doc/littler/examples/installGithub.r /usr/local/bin/installGithub.r \
+	&& ln -s /usr/share/doc/littler/examples/testInstalled.r /usr/local/bin/testInstalled.r \
+	&& install.r docopt \
+	&& rm -rf /tmp/downloaded_packages/ /tmp/*.rds \
+	&& rm -rf /var/lib/apt/lists/*
 
 #install main base OS
-FROM r-base:3.4.1
-RUN apt-get update && apt-get install -y python3 nodejs bc python3-numpy python3-scipy python3-pip gawk
+RUN apt-get update && apt-get install -y python3 nodejs bc python3-numpy python3-scipy python3-pip gawk 
+#rsync python2.7
 RUN cp /usr/bin/python3 /usr/bin/python
 
 #install java
@@ -53,36 +128,25 @@ RUN cd /tmp && apt-get update
 RUN cd /tmp && apt-get install -y libtbb-dev && \
     wget $BOWTIE_URL && unzip v${BOWTIE_VERSION}.zip && \
     cd ${BOWTIE_NAME}-${BOWTIE_VERSION} && \
-    make -j $(nproc) && make install 
-
-#install bedtools
-ENV BEDTOOLS_VERSION 2.25.0
-ENV BEDTOOLS_URL "https://github.com/arq5x/bedtools2/releases/download/v${BEDTOOLS_VERSION}/bedtools-${BEDTOOLS_VERSION}.tar.gz"
-RUN cd /tmp && wget $BEDTOOLS_URL; \
-    tar -zxf bedtools-${BEDTOOLS_VERSION}.tar.gz; \
-    cd bedtools2; \
-    make && make install
-
-#install fastqc
-ENV FASTQC_VERSION 0.11.9
-ENV FASTQC_URL "https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v${FASTQC_VERSION}.zip"
-RUN cd /tmp && wget ${FASTQC_URL}; \
-    unzip fastqc_v${FASTQC_VERSION}.zip; \
-    chmod 755 FastQC/fastqc; \
-    ln -s /tmp/FastQC/fastqc /usr/local/bin/fastqc
+    make -j $(nproc) && make install
+RUN rm -rf v${BOWTIE_VERSION}.zip /tmp/${BOWTIE_NAME}-${BOWTIE_VERSION};
 
 
-#install seaseq
-ENV SEASEQ_URL "https://github.com/madetunj/seaseq-dev/archive/v1-dev.tar.gz"
-RUN mkdir -p /opt/seaseq
-RUN cd /tmp && wget ${SEASEQ_URL} && tar -xf v1-dev.tar.gz; \
-    cd seaseq-dev-1-dev && cp -rf bin /opt/seaseq/bin && cp -rf cwl /opt/seaseq/cwl
-ENV PATH /opt/seaseq/bin:${PATH}
-
+RUN mkdir -p /tools
 COPY --from=builder /usr/local/bin/samtools /usr/local/bin/samtools
-#COPY --from=builder /tmp/FastQC/fastqc /usr/local/bin/fastqc
+COPY --from=builder /tmp/bedtools2/bin /tools/bedtools/bin
+COPY --from=builder /tmp/FastQC /tools/FastQC
+COPY --from=builder /tmp/SEASEQ /tools/SEASEQ
+# #COPY --from=bedtoolsbuild /tmp/bedtools2/bin/bamToBed /usr/local/bin/bamToBed
+# #COPY --from=bedtoolsbuild /tmp/bedtools2/bin/flankBed /usr/local/bin/flankBed
+# #COPY --from=bedtoolsbuild /tmp/bedtools2/bin/intersectBed /usr/local/bin/intersectBed
+# #COPY --from=bedtoolsbuild /tmp/bedtools2/bin/sortBed /usr/local/bin/sortBed
+# COPY --from=bedtoolsbuild /tmp/bedtools2/bin /tools/bedtools/bin
+ENV PATH /tools/bedtools/bin:/tools/SEASEQ/bin:${PATH}
+RUN ln -s /tools/FastQC/fastqc /usr/local/bin/fastqc
+
 #COPY --from=bowtie /usr/bin/* /usr/bin/
 #COPY --from=python /usr/local/bin/python /usr/local/bin/python
 #COPY --from=bowtie /usr/bin/bowtie /usr/local/bin/bowtie
 #CMD ["bowtie"]
-
+#ENTRYPOINT ["cwltool", "--parallel", "--outdir", "results", "/tools/SEASEQ/cwl/seaseq_pipeline.cwl"]
